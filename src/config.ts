@@ -1,7 +1,7 @@
 export const NETWORK: "testnet" | "mainnet" = "mainnet";
+
 export const DEFAULT_POOL_KEY = "SUI_DBUSDC";
 export const DEFAULT_DEEP_AMOUNT = 1;
-
 export const BASE_TOKEN_SYMBOL = "SUI";
 export const QUOTE_TOKEN_SYMBOL = "USDC";
 

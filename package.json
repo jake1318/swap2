@@ -11,7 +11,6 @@
     "@mysten/dapp-kit": "^0.14.49",
     "@mysten/deepbook-v3": "^0.12.27",
     "@mysten/sui": "^1.21.1",
-    "@mysten/sui.js": "^0.54.1",
     "@tanstack/react-query": "^5.66.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
