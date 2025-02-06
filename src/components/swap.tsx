@@ -4,7 +4,7 @@ import {
   useSignAndExecuteTransaction,
   useSuiClient,
 } from "@mysten/dapp-kit";
-import { Transaction } from "@mysten/sui/transactions"; /* Updated to use Transaction from new SDK */
+import { Transaction } from "@mysten/sui/transactions"; // New Transaction class from @mysten/sui
 import { DeepBookClient } from "@mysten/deepbook-v3";
 import {
   BASE_TOKEN_SYMBOL,
@@ -22,7 +22,7 @@ import {
 
 const Swap: React.FC = () => {
   const account = useCurrentAccount();
-  const suiClient = useSuiClient(); // Sui RPC client from context
+  const suiClient = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
   // Component state
@@ -37,8 +37,8 @@ const Swap: React.FC = () => {
     return null;
   }
 
-  const baseSymbol = BASE_TOKEN_SYMBOL; // "SUI"
-  const quoteSymbol = QUOTE_TOKEN_SYMBOL; // "USDC"
+  const baseSymbol = BASE_TOKEN_SYMBOL;
+  const quoteSymbol = QUOTE_TOKEN_SYMBOL;
   const fromTokenSymbol = inputToken === "BASE" ? baseSymbol : quoteSymbol;
   const toTokenSymbol = inputToken === "BASE" ? quoteSymbol : baseSymbol;
 
@@ -55,35 +55,34 @@ const Swap: React.FC = () => {
 
     setLoading(true);
     try {
-      // Initialize DeepBook client (for potential future use or queries)
+      // Initialize DeepBook client (if needed)
       const deepBookClient = new DeepBookClient({
         client: suiClient,
         address: account.address,
         env: NETWORK,
       });
 
-      // Create a new transaction block (programmable transaction)
-      const tx =
-        new Transaction(); /* Using new Transaction class (formerly TransactionBlock) */
+      // Create a new Transaction (replacing the old TransactionBlock)
+      const tx = new Transaction();
 
-      // Convert the swap amount and fee to smallest units (1 SUI or USDC = 10^9 base units)
+      // Convert swap amount and fee to base units (1 SUI/USDC = 10^9 units)
       const swapAmount = BigInt(Math.floor(amtNum * 1e9));
       const feeAmount = BigInt(Math.floor(DEFAULT_FEE_COVERAGE_SUI * 1e9));
 
-      let primarySuiCoin; // Coin<SUI> to swap (if swapping SUI)
-      let suiForFee; // Coin<SUI> to convert to DEEP for fees
+      let primarySuiCoin; // For BASE swap
+      let suiForFee; // For fee conversion to DEEP
 
       if (inputToken === "BASE") {
-        // Splitting the gas coin into two: one for the main swap amount, one for fee coverage
+        // Splitting the gas coin into two parts using the new pure helper for u64
         [primarySuiCoin, suiForFee] = tx.splitCoins(tx.gas, [
-          tx.pure(swapAmount, "u64"),
-          tx.pure(feeAmount, "u64"),
+          tx.pure.u64(swapAmount),
+          tx.pure.u64(feeAmount),
         ]);
       } else {
-        // If swapping USDC, only split the gas coin for the fee portion (keep remainder for gas)
-        [suiForFee] = tx.splitCoins(tx.gas, [tx.pure(feeAmount, "u64")]);
+        // If swapping USDC, only extract fee from gas coin
+        [suiForFee] = tx.splitCoins(tx.gas, [tx.pure.u64(feeAmount)]);
 
-        // Fetch a USDC coin owned by the user to swap (needs at least 'swapAmount')
+        // Fetch a USDC coin owned by the user
         const { data: coins } = await suiClient.getCoins({
           owner: account.address,
           coinType: USDC_COIN_TYPE,
@@ -91,7 +90,7 @@ const Swap: React.FC = () => {
         if (!coins.length) {
           throw new Error("No USDC coins available in your account.");
         }
-        // Choose a USDC coin with sufficient balance (here we take the largest coin)
+        // Sort coins to select one with highest balance
         coins.sort((a, b) => BigInt(b.balance) - BigInt(a.balance));
         const coinToUse = coins[0];
         if (BigInt(coinToUse.balance) < swapAmount) {
@@ -104,80 +103,75 @@ const Swap: React.FC = () => {
           coinToUse.balance
         );
 
-        // Split the USDC coin to the exact amount to swap (if coin has more than needed)
+        // Split the USDC coin to get the exact amount for swap
         const [usdcToSwap] = tx.splitCoins(tx.object(coinToUse.coinObjectId), [
-          tx.pure(swapAmount, "u64"),
+          tx.pure.u64(swapAmount),
         ]);
 
         // Perform the swap: USDC (quote) to SUI (base) using DEEP for fees
-        const minSuiOut = tx.pure(
-          minOutNum ? BigInt(Math.floor(minOutNum * 1e9)) : 0n,
-          "u64"
+        const minSuiOut = tx.pure.u64(
+          minOutNum ? BigInt(Math.floor(minOutNum * 1e9)) : 0n
         );
-        // Move call: swap_exact_quote_for_base on SUI/USDC pool (USDC -> SUI)
         const [, suiObtained] = tx.moveCall({
           target: `${DEEPBOOK_PACKAGE_ID}::pool::swap_exact_quote_for_base`,
           typeArguments: [SUI_COIN_TYPE, USDC_COIN_TYPE],
           arguments: [
-            tx.object(SUI_USDC_POOL_ID), // SUI/USDC pool object
-            usdcToSwap, // Coin<USDC> to swap for SUI
-            suiForFee, // Coin<DEEP> (actually SUI coin to be converted to DEEP in step1)
-            minSuiOut, // Minimum SUI to receive
-            tx.object("0x6"), // Clock object (global clock ID)
+            tx.object(SUI_USDC_POOL_ID),
+            usdcToSwap,
+            suiForFee,
+            minSuiOut,
+            tx.object("0x6"),
           ],
         });
         // Transfer the obtained SUI to the user's address
-        tx.transferObjects([suiObtained], tx.pure(account.address));
+        tx.transferObjects([suiObtained], tx.pure.address(account.address));
       }
 
-      // === Step 1: Swap a portion of SUI -> DEEP for fee coverage ===
-      // (This is common for both scenarios. In USDC->SUI case, primarySuiCoin is undefined and not used in this step.)
+      // === Swap a portion of SUI -> DEEP for fee coverage (common for both cases) ===
       const [, deepObtained] = tx.moveCall({
         target: `${DEEPBOOK_PACKAGE_ID}::pool::swap_exact_quote_for_base`,
         typeArguments: [DEEP_COIN_TYPE, SUI_COIN_TYPE],
         arguments: [
-          tx.object(SUI_DEEP_POOL_ID), // SUI/DEEP pool object
-          suiForFee, // Coin<SUI> to swap for DEEP (fee coverage)
-          tx.pure(0, "u64"), // Fee input for this swap (not used here, 0)
-          tx.pure(0, "u64"), // min_base_out (0 to accept any amount of DEEP)
-          tx.object("0x6"), // Clock object
+          tx.object(SUI_DEEP_POOL_ID),
+          suiForFee,
+          tx.pure.u64(0n),
+          tx.pure.u64(0n),
+          tx.object("0x6"),
         ],
       });
       const deepCoinForFee = deepObtained;
 
       if (inputToken === "BASE") {
-        // === Step 2 (BASE→QUOTE): Main Swap SUI -> USDC using DEEP for fees ===
-        const minUsdcOut = tx.pure(
-          minOutNum ? BigInt(Math.floor(minOutNum * 1e9)) : 0n,
-          "u64"
+        // === Main Swap for BASE→QUOTE: SUI -> USDC using DEEP for fees ===
+        const minUsdcOut = tx.pure.u64(
+          minOutNum ? BigInt(Math.floor(minOutNum * 1e9)) : 0n
         );
         const [, usdcObtained] = tx.moveCall({
           target: `${DEEPBOOK_PACKAGE_ID}::pool::swap_exact_base_for_quote`,
           typeArguments: [SUI_COIN_TYPE, USDC_COIN_TYPE],
           arguments: [
-            tx.object(SUI_USDC_POOL_ID), // SUI/USDC pool object
-            primarySuiCoin, // Coin<SUI> to swap for USDC
-            deepCoinForFee, // Coin<DEEP> for fee coverage
-            minUsdcOut, // Minimum USDC to receive
-            tx.object("0x6"), // Clock object
+            tx.object(SUI_USDC_POOL_ID),
+            primarySuiCoin,
+            deepCoinForFee,
+            minUsdcOut,
+            tx.object("0x6"),
           ],
         });
         // Transfer the obtained USDC to the user's address
-        tx.transferObjects([usdcObtained], tx.pure(account.address));
+        tx.transferObjects([usdcObtained], tx.pure.address(account.address));
       }
 
-      // Set an overestimated gas budget for the transaction
+      // Set the gas budget explicitly
       tx.setGasBudget(OVERESTIMATED_GAS_BUDGET);
 
-      // Log the serialized transaction for debugging
+      // Debug log: output the serialized transaction
       console.log("Serialized transaction:", tx.serialize());
 
-      // Sign and execute the transaction block via the connected wallet
+      // Sign and execute the transaction via the connected wallet
       const result = await signAndExecute({
-        transaction: tx /* Using 'transaction' param as per latest dApp Kit */,
+        transaction: tx,
         chain: "sui:mainnet",
       });
-
       console.log("Transaction result:", result);
       setTxResult(result.digest);
     } catch (e: any) {
@@ -193,7 +187,6 @@ const Swap: React.FC = () => {
       style={{ padding: "1rem", border: "1px solid #ccc", borderRadius: "8px" }}
     >
       <h2>Swap</h2>
-      {/* Input for selecting base or quote token to swap from */}
       <div style={{ marginBottom: "0.5rem" }}>
         <label>From:</label>{" "}
         <select
